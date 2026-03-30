@@ -1,0 +1,279 @@
+"""Main PGMQ class for pgmq-py."""
+
+import json
+from types import TracebackType
+from typing import Any, Self, TypeVar
+
+from psycopg import AsyncConnection
+from psycopg_pool import AsyncConnectionPool
+
+from .queries import (
+    archive_query,
+    create_queue_query,
+    create_schema_query,
+    delete_messages_by_ids_query,
+    delete_query,
+    delete_queue_query,
+    delete_schema_query,
+    read_all_messages_by_group_id_query,
+    read_message_by_group_id_query,
+    read_query,
+    send_query,
+)
+from .queue import Queue
+from .types import Message, parse_db_message
+from .utils import execute_with_transaction, validate_queue_name
+
+T = TypeVar("T")
+
+
+class PGMQ:
+    """PostgreSQL Message Queue client.
+
+    This is the central class for interacting with pgmq. It manages the
+    connection pool and provides methods for schema, queue, and message
+    operations.
+
+    Usage:
+        async with PGMQ("postgresql://user:pass@localhost/db") as pgmq:
+            await pgmq.create_schema()
+            await pgmq.create_queue("my_queue")
+            await pgmq.send_message("my_queue", {"data": "value"})
+    """
+
+    def __init__(self, connection_string: str, min_size: int = 1, max_size: int = 10):
+        """Initialize PGMQ.
+
+        Args:
+            connection_string: PostgreSQL connection string.
+            min_size: Minimum number of connections in the pool.
+            max_size: Maximum number of connections in the pool.
+        """
+        self._connection_string = connection_string
+        self._pool: AsyncConnectionPool[AsyncConnection[Any]] | None = None
+        self._min_size = min_size
+        self._max_size = max_size
+
+    async def __aenter__(self) -> Self:
+        """Enter the async context manager."""
+        self._pool = AsyncConnectionPool(
+            self._connection_string,
+            min_size=self._min_size,
+            max_size=self._max_size,
+            open=False,
+        )
+        await self._pool.open()
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> None:
+        """Exit the async context manager."""
+        if self._pool:
+            await self._pool.close()
+            self._pool = None
+
+    def _get_pool(self) -> AsyncConnectionPool[AsyncConnection[Any]]:
+        """Get the connection pool.
+
+        Raises:
+            RuntimeError: If PGMQ is not used as a context manager.
+        """
+        if self._pool is None:
+            raise RuntimeError("PGMQ must be used as an async context manager")
+        return self._pool
+
+    # Schema operations
+
+    async def create_schema(self) -> None:
+        """Create the pgmq schema if it doesn't exist."""
+        pool = self._get_pool()
+        async with pool.connection() as conn:
+            await conn.execute(create_schema_query())
+
+    async def delete_schema(self) -> None:
+        """Delete the pgmq schema if it exists."""
+        pool = self._get_pool()
+        async with pool.connection() as conn:
+            await conn.execute(delete_schema_query())
+
+    # Queue operations
+
+    async def create_queue(self, name: str) -> None:
+        """Create a queue and its archive table.
+
+        Args:
+            name: The queue name. Must be alphanumeric plus underscore,
+                max 47 characters.
+
+        Raises:
+            QueueNameError: If the queue name is invalid.
+        """
+        validate_queue_name(name)
+        pool = self._get_pool()
+        async with pool.connection() as conn:
+            await conn.execute(create_queue_query(name))
+
+    async def delete_queue(self, name: str) -> None:
+        """Delete a queue and its archive table.
+
+        Args:
+            name: The queue name.
+        """
+        pool = self._get_pool()
+        async with pool.connection() as conn:
+            await conn.execute(delete_queue_query(name))
+
+    def get_queue(self, name: str) -> Queue:
+        """Get a Queue instance for the given queue name.
+
+        Args:
+            name: The queue name.
+
+        Returns:
+            A Queue instance bound to the given name.
+        """
+        return Queue(self._get_pool(), name)
+
+    # Message operations
+
+    async def send_message(self, queue: str, message: Any, vt: int = 0) -> int:
+        """Send a message to a queue.
+
+        Args:
+            queue: The queue name.
+            message: The message payload (will be JSON serialized).
+            vt: Visibility timeout in seconds. The message will be hidden
+                from consumers for this duration after being sent.
+
+        Returns:
+            The message ID.
+        """
+        pool = self._get_pool()
+        query = send_query(queue, vt)
+        async with pool.connection() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(query, [json.dumps(message)])
+                row = await cur.fetchone()
+                if row is None:
+                    raise RuntimeError("Failed to send message")
+                return int(row[0])
+
+    async def read_message(self, queue: str, vt: int) -> Message[Any] | None:
+        """Read a message from a queue.
+
+        Args:
+            queue: The queue name.
+            vt: Visibility timeout in seconds. The message will be hidden
+                from other consumers for this duration.
+
+        Returns:
+            The message if available, None otherwise.
+        """
+        query = read_query(queue, vt)
+        rows = await execute_with_transaction(self._get_pool(), query)
+        if rows:
+            return parse_db_message(rows[0])
+        return None
+
+    async def delete_message(self, queue: str, msg_id: int) -> int:
+        """Delete a message from a queue.
+
+        Args:
+            queue: The queue name.
+            msg_id: The message ID to delete.
+
+        Returns:
+            The deleted message ID.
+        """
+        query = delete_query(queue, msg_id)
+        rows = await execute_with_transaction(self._get_pool(), query)
+        return int(rows[0]["msg_id"])
+
+    async def archive_message(self, queue: str, msg_id: int) -> int:
+        """Archive a message from a queue.
+
+        Moves the message from the queue to the archive table.
+
+        Args:
+            queue: The queue name.
+            msg_id: The message ID to archive.
+
+        Returns:
+            The archived message ID.
+        """
+        query = archive_query(queue, msg_id)
+        rows = await execute_with_transaction(self._get_pool(), query)
+        return int(rows[0]["msg_id"])
+
+    # Group FIFO operations
+
+    async def read_message_by_group_id(
+        self, queue: str, group_id_path: list[str], vt: int
+    ) -> Message[Any] | None:
+        """Read a message using the Group FIFO pattern.
+
+        Returns the single oldest available message across all groups where
+        the oldest message is not in progress. If a group's oldest message
+        is in progress (vt in future), that entire group is skipped.
+
+        This allows parallel processing of different groups while maintaining
+        FIFO ordering within each group.
+
+        Args:
+            queue: The queue name.
+            group_id_path: JSON path to the group ID field
+                (e.g., ['pr_id'] or ['metadata', 'group_id']).
+            vt: Visibility timeout in seconds.
+
+        Returns:
+            The oldest available message, or None if none available.
+        """
+        json_path = "{" + ",".join(group_id_path) + "}"
+        query = read_message_by_group_id_query(queue, vt)
+        rows = await execute_with_transaction(self._get_pool(), query, [json_path])
+        if rows:
+            return parse_db_message(rows[0])
+        return None
+
+    async def read_all_messages_by_group_id(
+        self, queue: str, group_id_path: list[str], group_id_value: str, vt: int
+    ) -> list[Message[Any]]:
+        """Read all messages for a specific group ID.
+
+        Ignores visibility timeout and returns all messages for the group,
+        ordered by msg_id. Use this when you want to process all remaining
+        messages for a group you're already working on.
+
+        Args:
+            queue: The queue name.
+            group_id_path: JSON path to the group ID field.
+            group_id_value: The value of the group ID to filter by.
+            vt: Visibility timeout to set for all messages.
+
+        Returns:
+            List of all messages for this group.
+        """
+        json_path = "{" + ",".join(group_id_path) + "}"
+        query = read_all_messages_by_group_id_query(queue, vt)
+        rows = await execute_with_transaction(
+            self._get_pool(), query, [json_path, group_id_value]
+        )
+        return [parse_db_message(row) for row in rows]
+
+    async def delete_messages_by_ids(self, queue: str, ids: list[int]) -> list[int]:
+        """Delete multiple messages by their IDs.
+
+        Args:
+            queue: The queue name.
+            ids: List of message IDs to delete.
+
+        Returns:
+            List of deleted message IDs.
+        """
+        query = delete_messages_by_ids_query(queue)
+        rows = await execute_with_transaction(self._get_pool(), query, [ids])
+        return [int(row["msg_id"]) for row in rows]
