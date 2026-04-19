@@ -1,5 +1,6 @@
 """Queue wrapper class for pgmq-py."""
 
+import json
 from typing import Any, TypeVar
 
 from psycopg import AsyncConnection
@@ -12,9 +13,10 @@ from .queries import (
     read_all_messages_by_group_id_query,
     read_message_by_group_id_query,
     read_query,
+    send_query,
 )
 from .types import Message, parse_db_message
-from .utils import execute_with_transaction
+from .utils import execute_with_transaction, validate_queue_name
 
 T = TypeVar("T")
 
@@ -33,7 +35,11 @@ class Queue:
         Args:
             pool: The connection pool to use.
             name: The queue name.
+
+        Raises:
+            QueueNameError: If the queue name is invalid.
         """
+        validate_queue_name(name)
         self._pool = pool
         self._name = name
 
@@ -41,6 +47,26 @@ class Queue:
     def name(self) -> str:
         """Get the queue name."""
         return self._name
+
+    async def send_message(self, message: Any, vt: int = 0) -> int:
+        """Send a message to the queue.
+
+        Args:
+            message: The message payload (will be JSON serialized).
+            vt: Visibility timeout in seconds. The message will be hidden
+                from consumers for this duration after being sent.
+
+        Returns:
+            The message ID.
+        """
+        query = send_query(self._name, vt)
+        async with self._pool.connection() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(query, [json.dumps(message)])
+                row = await cur.fetchone()
+                if row is None:
+                    raise RuntimeError("Failed to send message")
+                return int(row[0])
 
     async def read_message(self, vt: int = 0) -> Message[Any] | None:
         """Read a message from the queue.
@@ -105,7 +131,7 @@ class Queue:
         """
         json_path = "{" + ",".join(group_id_path) + "}"
         query = read_message_by_group_id_query(self._name, vt)
-        rows = await execute_with_transaction(self._pool, query, [json_path])
+        rows = await execute_with_transaction(self._pool, query, [json_path, json_path])
         if rows:
             return parse_db_message(rows[0])
         return None

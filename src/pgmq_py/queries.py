@@ -69,7 +69,7 @@ def send_query(queue: str, vt: int) -> str:
         SQL statement to insert a message.
     """
     return f"""INSERT INTO {PGMQ_SCHEMA}.{QUEUE_PREFIX}_{queue} (vt, message)
-        VALUES ((now() + interval '{vt} seconds'), $1::jsonb)
+        VALUES ((now() + interval '{vt} seconds'), %s::jsonb)
         RETURNING msg_id;"""
 
 
@@ -151,14 +151,14 @@ def read_message_by_group_id_query(queue: str, vt: int) -> str:
     """
     table = f"{PGMQ_SCHEMA}.{QUEUE_PREFIX}_{queue}"
     return f"""WITH cte0 AS
-                 (SELECT message #>> $1 AS group_field, MIN(msg_id) AS msg_id
+                 (SELECT message #>> %s AS group_field, MIN(msg_id) AS msg_id
                   FROM {table}
                   GROUP BY group_field),
              cte1 AS
                  (SELECT t1.msg_id AS msg_id
                   FROM {table} AS t1
                   JOIN cte0 AS t2
-                    ON t1.message #>> $1 = t2.group_field
+                    ON t1.message #>> %s = t2.group_field
                     AND t1.msg_id = t2.msg_id
                   WHERE vt <= clock_timestamp()
                   ORDER BY msg_id ASC
@@ -187,7 +187,7 @@ def read_all_messages_by_group_id_query(queue: str, vt: int) -> str:
     return f"""WITH cte AS
                  (SELECT msg_id
                   FROM {PGMQ_SCHEMA}.{QUEUE_PREFIX}_{queue}
-                  WHERE message #>> $1 = $2
+                  WHERE message #>> %s = %s
                   ORDER BY msg_id
                   FOR UPDATE)
         UPDATE {PGMQ_SCHEMA}.{QUEUE_PREFIX}_{queue} t
@@ -209,5 +209,5 @@ def delete_messages_by_ids_query(queue: str) -> str:
     """
     return f"""DELETE
         FROM {PGMQ_SCHEMA}.{QUEUE_PREFIX}_{queue}
-        WHERE msg_id = ANY($1::bigint[])
+        WHERE msg_id = ANY(%s::bigint[])
         RETURNING msg_id;"""

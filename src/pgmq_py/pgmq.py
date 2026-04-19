@@ -1,6 +1,5 @@
 """Main PGMQ class for pgmq-py."""
 
-import json
 from types import TracebackType
 from typing import Any, Self, TypeVar
 
@@ -8,21 +7,14 @@ from psycopg import AsyncConnection
 from psycopg_pool import AsyncConnectionPool
 
 from .queries import (
-    archive_query,
     create_queue_query,
     create_schema_query,
-    delete_messages_by_ids_query,
-    delete_query,
     delete_queue_query,
     delete_schema_query,
-    read_all_messages_by_group_id_query,
-    read_message_by_group_id_query,
-    read_query,
-    send_query,
 )
 from .queue import Queue
-from .types import Message, parse_db_message
-from .utils import execute_with_transaction, validate_queue_name
+from .types import Message
+from .utils import validate_queue_name
 
 T = TypeVar("T")
 
@@ -122,7 +114,11 @@ class PGMQ:
 
         Args:
             name: The queue name.
+
+        Raises:
+            QueueNameError: If the queue name is invalid.
         """
+        validate_queue_name(name)
         pool = self._get_pool()
         async with pool.connection() as conn:
             await conn.execute(delete_queue_query(name))
@@ -151,16 +147,11 @@ class PGMQ:
 
         Returns:
             The message ID.
+
+        Raises:
+            QueueNameError: If the queue name is invalid.
         """
-        pool = self._get_pool()
-        query = send_query(queue, vt)
-        async with pool.connection() as conn:
-            async with conn.cursor() as cur:
-                await cur.execute(query, [json.dumps(message)])
-                row = await cur.fetchone()
-                if row is None:
-                    raise RuntimeError("Failed to send message")
-                return int(row[0])
+        return await self.get_queue(queue).send_message(message, vt)
 
     async def read_message(self, queue: str, vt: int) -> Message[Any] | None:
         """Read a message from a queue.
@@ -172,12 +163,11 @@ class PGMQ:
 
         Returns:
             The message if available, None otherwise.
+
+        Raises:
+            QueueNameError: If the queue name is invalid.
         """
-        query = read_query(queue, vt)
-        rows = await execute_with_transaction(self._get_pool(), query)
-        if rows:
-            return parse_db_message(rows[0])
-        return None
+        return await self.get_queue(queue).read_message(vt)
 
     async def delete_message(self, queue: str, msg_id: int) -> int:
         """Delete a message from a queue.
@@ -188,10 +178,11 @@ class PGMQ:
 
         Returns:
             The deleted message ID.
+
+        Raises:
+            QueueNameError: If the queue name is invalid.
         """
-        query = delete_query(queue, msg_id)
-        rows = await execute_with_transaction(self._get_pool(), query)
-        return int(rows[0]["msg_id"])
+        return await self.get_queue(queue).delete_message(msg_id)
 
     async def archive_message(self, queue: str, msg_id: int) -> int:
         """Archive a message from a queue.
@@ -204,10 +195,11 @@ class PGMQ:
 
         Returns:
             The archived message ID.
+
+        Raises:
+            QueueNameError: If the queue name is invalid.
         """
-        query = archive_query(queue, msg_id)
-        rows = await execute_with_transaction(self._get_pool(), query)
-        return int(rows[0]["msg_id"])
+        return await self.get_queue(queue).archive_message(msg_id)
 
     # Group FIFO operations
 
@@ -232,12 +224,7 @@ class PGMQ:
         Returns:
             The oldest available message, or None if none available.
         """
-        json_path = "{" + ",".join(group_id_path) + "}"
-        query = read_message_by_group_id_query(queue, vt)
-        rows = await execute_with_transaction(self._get_pool(), query, [json_path])
-        if rows:
-            return parse_db_message(rows[0])
-        return None
+        return await self.get_queue(queue).read_message_by_group_id(group_id_path, vt)
 
     async def read_all_messages_by_group_id(
         self, queue: str, group_id_path: list[str], group_id_value: str, vt: int
@@ -257,12 +244,9 @@ class PGMQ:
         Returns:
             List of all messages for this group.
         """
-        json_path = "{" + ",".join(group_id_path) + "}"
-        query = read_all_messages_by_group_id_query(queue, vt)
-        rows = await execute_with_transaction(
-            self._get_pool(), query, [json_path, group_id_value]
+        return await self.get_queue(queue).read_all_messages_by_group_id(
+            group_id_path, group_id_value, vt
         )
-        return [parse_db_message(row) for row in rows]
 
     async def delete_messages_by_ids(self, queue: str, ids: list[int]) -> list[int]:
         """Delete multiple messages by their IDs.
@@ -274,6 +258,4 @@ class PGMQ:
         Returns:
             List of deleted message IDs.
         """
-        query = delete_messages_by_ids_query(queue)
-        rows = await execute_with_transaction(self._get_pool(), query, [ids])
-        return [int(row["msg_id"]) for row in rows]
+        return await self.get_queue(queue).delete_messages_by_ids(ids)
