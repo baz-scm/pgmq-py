@@ -33,18 +33,35 @@ class PGMQ:
             await pgmq.send_message("my_queue", {"data": "value"})
     """
 
-    def __init__(self, connection_string: str, min_size: int = 1, max_size: int = 10):
+    def __init__(
+        self,
+        connection_string: str,
+        min_size: int = 1,
+        max_size: int = 10,
+        **pool_kwargs: Any,
+    ):
         """Initialize PGMQ.
 
         Args:
             connection_string: PostgreSQL connection string.
             min_size: Minimum number of connections in the pool.
             max_size: Maximum number of connections in the pool.
+            **pool_kwargs: Extra keyword arguments forwarded to
+                psycopg_pool.AsyncConnectionPool (e.g. check, max_lifetime,
+                configure, reset).
+
+        Raises:
+            TypeError: If min_size, max_size, or open are also passed via
+                pool_kwargs.
         """
+        for key in ("min_size", "max_size", "open"):
+            if key in pool_kwargs:
+                raise TypeError(f"{key!r} must not be passed via pool_kwargs")
         self._connection_string = connection_string
         self._pool: AsyncConnectionPool[AsyncConnection[Any]] | None = None
         self._min_size = min_size
         self._max_size = max_size
+        self._pool_kwargs = pool_kwargs
 
     async def __aenter__(self) -> Self:
         """Enter the async context manager."""
@@ -53,6 +70,7 @@ class PGMQ:
             min_size=self._min_size,
             max_size=self._max_size,
             open=False,
+            **self._pool_kwargs,
         )
         await self._pool.open()
         return self

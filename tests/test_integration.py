@@ -3,6 +3,7 @@
 from typing import TypedDict
 
 import pytest
+from psycopg_pool import AsyncConnectionPool
 
 from pgmq_py import PGMQ, Message
 
@@ -127,3 +128,18 @@ class TestMessageType:
 
         with pytest.raises(AttributeError):
             msg.msg_id = 999  # type: ignore[misc]
+
+
+class TestPoolKwargs:
+    async def test_check_kwarg_forwarded(self, database_url: str) -> None:
+        async with PGMQ(
+            database_url, check=AsyncConnectionPool.check_connection
+        ) as pgmq:
+            assert pgmq._pool is not None
+            # psycopg_pool stores the forwarded check callable on _check
+            # (pool.check is the pool's own bound method).
+            assert pgmq._pool._check is AsyncConnectionPool.check_connection
+
+    async def test_no_extra_kwargs(self, database_url: str) -> None:
+        async with PGMQ(database_url) as pgmq:
+            assert pgmq._pool is not None
