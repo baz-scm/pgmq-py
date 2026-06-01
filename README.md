@@ -67,6 +67,31 @@ async with PGMQ("postgresql://...") as pgmq:
     await pgmq.delete_messages_by_ids("my_queue", [1, 2, 3])
 ```
 
+### Connection pool options
+
+`PGMQ` builds a `psycopg_pool.AsyncConnectionPool` internally. Beyond
+`min_size` / `max_size`, any extra keyword arguments are forwarded straight to
+the pool constructor (e.g. `check`, `max_lifetime`, `configure`, `reset`).
+
+A common use is `check`, which validates a connection before it's handed out.
+Without it, a connection that was killed server-side — e.g. by Postgres
+`idle_session_timeout` — is handed out dead and fails on the next query. Pass
+the pool's built-in `check_connection` to probe each connection on checkout:
+
+```python
+from psycopg_pool import AsyncConnectionPool
+from pgmq_py import PGMQ
+
+async with PGMQ(
+    "postgresql://user:password@localhost:5432/mydb",
+    check=AsyncConnectionPool.check_connection,
+) as pgmq:
+    ...
+```
+
+Note: `min_size`, `max_size`, and `open` are managed by `PGMQ` and passing them
+as extra kwargs raises `TypeError`.
+
 ### Queue Class
 
 ```python
