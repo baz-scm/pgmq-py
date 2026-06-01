@@ -3,7 +3,6 @@
 from typing import TypedDict
 
 import pytest
-from psycopg_pool import AsyncConnectionPool
 
 from pgmq_py import PGMQ, Message
 
@@ -131,15 +130,30 @@ class TestMessageType:
 
 
 class TestPoolKwargs:
-    async def test_check_kwarg_forwarded(self, database_url: str) -> None:
-        async with PGMQ(
-            database_url, check=AsyncConnectionPool.check_connection
-        ) as pgmq:
-            assert pgmq._pool is not None
-            # psycopg_pool stores the forwarded check callable on _check
-            # (pool.check is the pool's own bound method).
-            assert pgmq._pool._check is AsyncConnectionPool.check_connection
+    async def test_check_kwarg_runs_on_checkout(self, database_url: str) -> None:
+        # Assert the observable behavior the check kwarg buys us: the callable
+        # is run every time a connection is handed out. This is what guards
+        # against server-side-killed connections, and is stable across
+        # psycopg_pool versions (unlike poking at private pool attributes).
+        calls = 0
+
+        async def recording_check(conn: object) -> None:
+            nonlocal calls
+            calls += 1
+
+        async with PGMQ(database_url, check=recording_check) as pgmq:
+            pool = pgmq._get_pool()
+            async with pool.connection() as conn:
+                await conn.execute("SELECT 1")
+            async with pool.connection() as conn:
+                await conn.execute("SELECT 1")
+        assert calls == 2
 
     async def test_no_extra_kwargs(self, database_url: str) -> None:
         async with PGMQ(database_url) as pgmq:
             assert pgmq._pool is not None
+
+    def test_reserved_kwarg_collision_raises(self) -> None:
+        # Raised in __init__ before any connection, so no DB needed.
+        with pytest.raises(TypeError):
+            PGMQ("postgresql://localhost/db", open=False)
