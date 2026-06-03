@@ -24,6 +24,24 @@ class TestSendMessage:
         assert isinstance(msg_id, int)
         assert msg_id > 0
 
+    async def test_send_message_raw_nul_rejected(
+        self, pgmq: PGMQ, test_queue: str
+    ) -> None:
+        with pytest.raises(Exception):
+            await pgmq.send_message(test_queue, {"data": "a\x00b"}, vt=0)
+
+    async def test_send_message_sanitize_round_trip(
+        self, pgmq: PGMQ, test_queue: str
+    ) -> None:
+        msg_id = await pgmq.send_message(
+            test_queue, {"data": "a\x00b"}, vt=0, sanitize=True
+        )
+        assert isinstance(msg_id, int)
+        assert msg_id > 0
+        msg = await pgmq.read_message(test_queue, vt=60)
+        assert msg is not None
+        assert msg.message["data"] == "a\\u0000b"
+
 
 class TestReadMessage:
     async def test_read_message(self, pgmq: PGMQ, test_queue: str) -> None:

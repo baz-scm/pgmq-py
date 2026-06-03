@@ -154,7 +154,9 @@ class PGMQ:
 
     # Message operations
 
-    async def send_message(self, queue: str, message: Any, vt: int = 0) -> int:
+    async def send_message(
+        self, queue: str, message: Any, vt: int = 0, sanitize: bool = False
+    ) -> int:
         """Send a message to a queue.
 
         Args:
@@ -162,6 +164,10 @@ class PGMQ:
             message: The message payload (will be JSON serialized).
             vt: Visibility timeout in seconds. The message will be hidden
                 from consumers for this duration after being sent.
+            sanitize: If True, replace raw NUL bytes (``\\x00``) in the
+                payload with their literal escape text (``\\u0000``) before
+                serialization. Postgres jsonb cannot store the U+0000 code
+                point, so enable this when payloads may contain raw NUL bytes.
 
         Returns:
             The message ID.
@@ -169,7 +175,7 @@ class PGMQ:
         Raises:
             QueueNameError: If the queue name is invalid.
         """
-        return await self.get_queue(queue).send_message(message, vt)
+        return await self.get_queue(queue).send_message(message, vt, sanitize)
 
     async def read_message(self, queue: str, vt: int) -> Message[Any] | None:
         """Read a message from a queue.
