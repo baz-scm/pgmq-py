@@ -16,7 +16,7 @@ from .queries import (
     send_query,
 )
 from .types import Message, parse_db_message
-from .utils import execute_with_transaction, validate_queue_name
+from .utils import execute_with_transaction, sanitize_nul, validate_queue_name
 
 T = TypeVar("T")
 
@@ -48,17 +48,25 @@ class Queue:
         """Get the queue name."""
         return self._name
 
-    async def send_message(self, message: Any, vt: int = 0) -> int:
+    async def send_message(
+        self, message: Any, vt: int = 0, sanitize: bool = False
+    ) -> int:
         """Send a message to the queue.
 
         Args:
             message: The message payload (will be JSON serialized).
             vt: Visibility timeout in seconds. The message will be hidden
                 from consumers for this duration after being sent.
+            sanitize: If True, replace raw NUL bytes (``\\x00``) in the
+                payload with their literal escape text (``\\u0000``) before
+                serialization. Postgres jsonb cannot store the U+0000 code
+                point, so enable this when payloads may contain raw NUL bytes.
 
         Returns:
             The message ID.
         """
+        if sanitize:
+            message = sanitize_nul(message)
         query = send_query(self._name, vt)
         async with self._pool.connection() as conn:
             async with conn.cursor() as cur:
