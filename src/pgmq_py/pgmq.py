@@ -1,5 +1,6 @@
 """Main PGMQ class for pgmq-py."""
 
+from datetime import datetime
 from types import TracebackType
 from typing import Any, Self, TypeVar
 
@@ -224,6 +225,22 @@ class PGMQ:
             QueueNameError: If the queue name is invalid.
         """
         return await self.get_queue(queue).archive_message(msg_id)
+
+    async def set_vt(self, queue: str, msg_id: int, vt: datetime) -> int:
+        """Set the visibility time for a message.
+
+        Args:
+            queue: The queue name.
+            msg_id: The message ID whose visibility time to update.
+            vt: The new visibility timestamp.
+
+        Returns:
+            The updated message ID.
+
+        Raises:
+            QueueNameError: If the queue name is invalid.
+        """
+        return await self.get_queue(queue).set_vt(msg_id, vt)
 
     # Group FIFO operations
 

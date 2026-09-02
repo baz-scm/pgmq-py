@@ -1,5 +1,6 @@
 """Integration tests for pgmq-py."""
 
+from datetime import UTC, datetime, timedelta
 from typing import TypedDict
 
 import pytest
@@ -87,6 +88,22 @@ class TestArchiveMessage:
         # Verify message is no longer in queue
         msg = await pgmq.read_message(test_queue, vt=60)
         assert msg is None
+
+
+class TestSetVt:
+    async def test_set_vt(self, pgmq: PGMQ, test_queue: str) -> None:
+        msg_id = await pgmq.send_message(test_queue, {"data": "test"}, vt=0)
+
+        updated_id = await pgmq.set_vt(
+            test_queue, msg_id, datetime.now(UTC) + timedelta(minutes=1)
+        )
+        assert updated_id == msg_id
+        assert await pgmq.read_message(test_queue, vt=60) is None
+
+        await pgmq.set_vt(test_queue, msg_id, datetime.now(UTC) - timedelta(seconds=1))
+        msg = await pgmq.read_message(test_queue, vt=60)
+        assert msg is not None
+        assert msg.msg_id == msg_id
 
 
 class TestQueueInterface:
