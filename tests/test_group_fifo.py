@@ -21,9 +21,7 @@ class TestReadMessageByGroupId:
     async def test_return_null_on_empty_queue(
         self, pgmq: PGMQ, group_fifo_queue: str
     ) -> None:
-        msg = await pgmq.read_message_by_group_id(
-            group_fifo_queue, ["group_id"], vt=60
-        )
+        msg = await pgmq.read_message_by_group_id(group_fifo_queue, ["group_id"], vt=60)
         assert msg is None
 
     async def test_read_oldest_available_message(
@@ -40,9 +38,7 @@ class TestReadMessageByGroupId:
             vt=0,
         )
 
-        msg = await pgmq.read_message_by_group_id(
-            group_fifo_queue, ["group_id"], vt=60
-        )
+        msg = await pgmq.read_message_by_group_id(group_fifo_queue, ["group_id"], vt=60)
         assert msg is not None
         assert msg.message["repo"] == "repo1"
 

@@ -1,6 +1,7 @@
 """Queue wrapper class for pgmq-py."""
 
 import json
+from datetime import datetime
 from typing import Any, TypeVar
 
 from psycopg import AsyncConnection
@@ -14,6 +15,7 @@ from .queries import (
     read_message_by_group_id_query,
     read_query,
     send_query,
+    vt_query,
 )
 from .types import Message, parse_db_message
 from .utils import execute_with_transaction, sanitize_nul, validate_queue_name
@@ -117,6 +119,20 @@ class Queue:
             The archived message ID.
         """
         query = archive_query(self._name, msg_id)
+        rows = await execute_with_transaction(self._pool, query)
+        return int(rows[0]["msg_id"])
+
+    async def set_vt(self, msg_id: int, vt: datetime) -> int:
+        """Set the visibility time for a message.
+
+        Args:
+            msg_id: The message ID whose visibility time to update.
+            vt: The new visibility timestamp.
+
+        Returns:
+            The updated message ID.
+        """
+        query = vt_query(self._name, msg_id, vt)
         rows = await execute_with_transaction(self._pool, query)
         return int(rows[0]["msg_id"])
 

@@ -1,5 +1,7 @@
 """SQL query builders for pgmq-py."""
 
+from datetime import datetime
+
 PGMQ_SCHEMA = "pgmq"
 QUEUE_PREFIX = "q"
 ARCHIVE_PREFIX = "a"
@@ -131,6 +133,24 @@ def delete_query(queue: str, msg_id: int) -> str:
     """
     return f"""DELETE
         FROM {PGMQ_SCHEMA}.{QUEUE_PREFIX}_{queue}
+        WHERE msg_id = {msg_id}
+        RETURNING msg_id;"""
+
+
+def vt_query(queue: str, msg_id: int, vt: datetime) -> str:
+    """Generate SQL to set the visibility time for a message.
+
+    Args:
+        queue: The queue name.
+        msg_id: The message ID whose visibility time to update.
+        vt: The new visibility timestamp.
+
+    Returns:
+        SQL statement to update a message's visibility time.
+    """
+    timestamp = vt.isoformat(sep=" ", timespec="milliseconds")
+    return f"""UPDATE {PGMQ_SCHEMA}.{QUEUE_PREFIX}_{queue}
+        SET vt = '{timestamp}'::timestamptz
         WHERE msg_id = {msg_id}
         RETURNING msg_id;"""
 
